@@ -35,11 +35,11 @@ class lcl_app definition.
         spmon  type spmon,
       end of ty_alv,
 
-      BEGIN OF ty_aufm,
+      begin of ty_aufm,
         aufnr type aufnr,
-        bwart type bwart,
+        "bwart type bwart,
         matnr type matnr,
-        qty type menge_d,
+        qty   type menge_d,
       end of ty_aufm.
 
 
@@ -56,9 +56,11 @@ class lcl_app definition.
           rg_dtence type range of caufv-idat3,
           rg_dtlanc type range of aufm-budat.
 
-    data: gt_alv type table of ty_alv,
+    data: gt_alv  type table of ty_alv,
           gt_aufm type table of ty_aufm,
-          r_alv  type ref to cl_salv_table.
+          gt_prod type table of ty_aufm,
+          gt_cons type table of ty_aufm,
+          r_alv   type ref to cl_salv_table.
 
     methods start.
 
@@ -96,9 +98,17 @@ class lcl_app implementation.
 
 
   method get_data.
-    data: rg_aufnr_aufm type range of aufnr.
+    data: rg_aufnr_aufm type range of aufnr,
+          rg_mov_cons   type range of bwart,
+          rg_mov_prod   type range of bwart,
+          lv_qtycons    type bdmng,
+          lv_qtyprod    type menge_d.
+
+    rg_mov_cons = value #( let s = 'I' o = 'EQ' in  option = o sign = s  ( low = '261') ( low = '262' ) ( low = '543') ( low = '544') ).
+    rg_mov_prod = value #( let s = 'I' o = 'EQ' in  option = o sign = s  ( low = '101') ( low = '102' ) ).
 
     "Seleciona as ordens de produção com componentes
+
     select ord~aufnr, ord~auart, ord~plnbez, ord~ktext, ord~werks, ord~ernam, ord~erdat, ord~ftrmi,  ord~idat2, ord~idat3, ord~gamng,
        ord~gmein,
        resb~rsnum, resb~matnr as idnrk, sum( abs( resb~bdmng ) ) as bdmng , resb~meins,
@@ -118,22 +128,36 @@ class lcl_app implementation.
       group by ord~aufnr, ord~auart, ord~plnbez, ord~ktext, ord~werks, ord~ernam, ord~erdat, ord~ftrmi,  ord~idat2, ord~idat3, ord~gamng,
                ord~gmein,resb~rsnum, resb~matnr , resb~meins, makt~maktx .
 
-      if lt_caufv is not INITIAL.
-       rg_aufnr_aufm = value #( for wa in lt_caufv ( option = 'EQ' sign = 'I' low = wa-aufnr ) ).
 
-       select aufnr, bwart,  matnr,
-         sum( case when shkzg = 'H' then menge * -1
-              when shkzg = 'S' then menge
-         end )  as qty
-         from aufm
-         into table @gt_aufm
-         where aufnr in @rg_aufnr
-         group by aufnr, bwart, matnr.
-         
-         
-         
 
-     endif.
+
+    if lt_caufv is not initial.
+      rg_aufnr_aufm = value #( for wa in lt_caufv ( option = 'EQ' sign = 'I' low = wa-aufnr ) ).
+
+      "Qtd produzida real
+      select aufnr, matnr,
+        sum( case when shkzg = 'H' then menge * -1
+             when shkzg = 'S' then menge
+        end )  as qty
+        from aufm
+        into table @gt_prod
+        where aufnr in @rg_aufnr
+          and bwart in @rg_mov_prod
+        group by aufnr, matnr.
+
+      "Qtd consumo real
+      select aufnr, matnr,
+        sum( case when shkzg = 'H' then menge * -1
+             when shkzg = 'S' then menge
+        end )  as qty
+        from aufm
+        into table @gt_cons
+        where aufnr in @rg_aufnr
+          and bwart in @rg_mov_cons
+        group by aufnr, matnr.
+
+
+    endif.
     gt_alv = corresponding #(  lt_caufv ).
 
   endmethod.
@@ -142,6 +166,30 @@ class lcl_app implementation.
     data(vl_lines) = lines( gt_alv ).
     loop at gt_alv assigning field-symbol(<fs_alv>).
       cl_progress_indicator=>progress_indicate( i_text = | Dados de produção e consumo real da ordem { <fs_alv>-aufnr } - { sy-tabix } de { vl_lines } ordens. | i_processed = sy-tabix i_output_immediately = abap_true ).
+      "producao real
+      try.
+        <fs_alv>-aubxx  = gt_prod[ aufnr = <fs_alv>-aufnr ]-qty.
+      catch cx_sy_itab_line_not_found.
+
+      endtry.
+
+      "Consumo real
+      try.
+          <fs_alv>-enmng  = abs( gt_cons[ aufnr = <fs_alv>-aufnr matnr = <fs_alv>-idnrk ]-qty ).
+      catch cx_sy_itab_line_not_found.
+
+      endtry.
+
+
+      <fs_alv>-varprd = <fs_alv>-gamng -  <fs_alv>-aubxx.
+
+      "calculo quantidade necessária- com base na quantidade produzida
+      "QtdNecessáriaReal  =  Producao Real *  consumo planejado / Producao Planejada
+      <fs_alv>-bdmng = <fs_alv>-aubxx *  <fs_alv>-bdmng / <fs_alv>-gamng  .
+
+      <fs_alv>-varcon =   <fs_alv>-enmng - <fs_alv>-bdmng.
+
+
       me->get_movements( changing ch_movement =  <fs_alv> ).
       <fs_alv>-spmon = |{ <fs_alv>-idat2(4) }{ <fs_alv>-idat2+4(2) } |.
 
@@ -155,13 +203,13 @@ class lcl_app implementation.
     data: rg_aufnr_aufm type range of aufnr,
           rg_mov_cons   type range of bwart,
           rg_mov_prod   type range of bwart,
-          lv_qtycons    type BDMNG,
+          lv_qtycons    type bdmng,
           lv_qtyprod    type menge_d.
 
     rg_mov_cons = value #( let s = 'I' o = 'EQ' in  option = o sign = s  ( low = '261') ( low = '262' ) ( low = '543') ( low = '544') ).
     rg_mov_prod = value #( let s = 'I' o = 'EQ' in  option = o sign = s  ( low = '101') ( low = '102' ) ).
 
-"Seleciona preço do Item
+    "Seleciona preço do Item
 
     select single matnr,bwkey, lbkum, salk3, vprsv, verpr, stprs, peinh from mbewh into @data(wa_mbewh)
            where matnr eq @ch_movement-idnrk
@@ -175,27 +223,27 @@ class lcl_app implementation.
             and bwkey eq @ch_movement-werks.
 
 
-    sort gt_aufm by matnr ascending bwart ASCENDING.
+   " sort gt_aufm by matnr ascending bwart ascending.
 
-    clear: lv_qtycons.
+"    clear: lv_qtycons.
 
 
-    lv_qtyprod = REDUCE BDMNG( INIT x = 0 FOR wa_prd IN gt_aufm where ( aufnr = ch_movement-aufnr and  matnr eq ch_movement-plnbez and  bwart in rg_mov_prod ) NEXT X = X + wa_prd-qty ).
+"    lv_qtyprod = reduce bdmng( init x = 0 for wa_prd in gt_aufm where ( aufnr = ch_movement-aufnr and  matnr eq ch_movement-plnbez and  bwart in rg_mov_prod ) next x = x + wa_prd-qty ).
     "lv_qtycons = REDUCE BDMNG( INIT x = 0 FOR wa_cons IN gt_aufm where ( aufnr = c_movement-aufnr and  matnr eq c_movement-idnrk and  bwart in rg_mov_cons ) NEXT x = x + wa_cons-qty ).
 
-    loop at gt_aufm into data(wa_cons) where aufnr = ch_movement-aufnr and  matnr eq ch_movement-idnrk and  bwart in rg_mov_cons .
-       lv_qtycons = lv_qtycons + wa_cons-qty.
-    endloop.
+"    loop at gt_aufm into data(wa_cons) where aufnr = ch_movement-aufnr and  matnr eq ch_movement-idnrk and  bwart in rg_mov_cons .
+ "     lv_qtycons = lv_qtycons + wa_cons-qty.
+  "  endloop.
 
-    ch_movement-enmng  = abs( lv_qtycons ).
-    ch_movement-aubxx  = lv_qtyprod.
-    ch_movement-varprd = ch_movement-gamng -  ch_movement-aubxx.
+  "  ch_movement-enmng  = abs( lv_qtycons ).
+  "  ch_movement-aubxx  = lv_qtyprod.
+  "  ch_movement-varprd = ch_movement-gamng -  ch_movement-aubxx.
 
     "calculo quantidade necessária- com base na quantidade produzida
     "QtdNecessáriaReal  =  Producao Real *  consumo planejado / Producao Planejada
-    ch_movement-bdmng = ch_movement-aubxx *  ch_movement-bdmng / ch_movement-gamng  .
+  "  ch_movement-bdmng = ch_movement-aubxx *  ch_movement-bdmng / ch_movement-gamng  .
 
-    ch_movement-varcon =   ch_movement-enmng - ch_movement-bdmng.
+  "  ch_movement-varcon =   ch_movement-enmng - ch_movement-bdmng.
 *
 *    "Busca o preço de custo, se o preço nao existir na MBEWH para o periodo de encerramento da ordem
 *    "busca do dados da MBEW-atual
@@ -297,10 +345,8 @@ select-options: s_aufnr for caufv-aufnr,
                 s_werks for caufv-werks,
                 s_matnr for caufv-stlbez,
                 s_dtcrea for caufv-erdat,
-                "s_dtlib  for caufv-idat1,
                 s_dtente for caufv-idat2.
-"s_dtence for caufv-idat3,
-"s_dtlanc for aufm-budat.
+
 
 selection-screen end of block b1.
 
@@ -319,5 +365,5 @@ start-of-selection.
   r_app->rg_werks = s_werks[].
   r_app->rg_dtcrea = s_dtcrea[].
   r_app->rg_dtente = s_dtente[].
-  
+
   r_app->start( ).
